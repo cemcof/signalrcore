@@ -18,6 +18,13 @@ class Subject(object):
     """
 
     def __init__(self, arguments=None):
+        """Create a client-to-server stream subject.
+
+        Args:
+            arguments (list, optional): Invocation arguments sent once when
+                streaming starts. A defensive copy is stored to avoid external
+                mutations changing the start payload.
+        """
         self.connection = None
         self.target = None
         self.invocation_id = str(uuid.uuid4())
