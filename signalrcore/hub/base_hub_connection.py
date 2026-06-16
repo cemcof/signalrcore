@@ -1,6 +1,7 @@
 import uuid
 import copy
 import ssl
+import threading
 from typing import Callable, List, Union, Optional
 from signalrcore.messages.message_type import MessageType
 from signalrcore.messages.stream_invocation_message\
@@ -99,9 +100,9 @@ class BaseHubConnection(object):
         self.logger = Helpers.get_logger()
         self.handlers = defaultdict(list)
         self.stream_handlers = defaultdict(list)
-        self.result_handlers = {}
         self.skip_negotiation = skip_negotiation
         self._callbacks = HubCallbacks()
+        self._send_lock = threading.RLock()
 
     def _negotiate(self) -> NegotiateResponse:
         """Negotiates connection with the server, do not call it
@@ -227,28 +228,6 @@ class BaseHubConnection(object):
         self.logger.debug("Handler registered started {0}".format(event))
         self.handlers[event].append(callback_function)
 
-    def on_with_result(self, event: str, callback: Callable) -> None:
-        """Register a callback for server-to-client invocations that expect
-        a result back (client results, introduced in SignalR .NET 7).
-        The server calls InvokeAsync on the client and waits for the return value.
-
-        The callback receives the arguments list and must return the result value.
-        If the callback raises an exception, the error message is sent back
-        to the server.
-
-        Only one result handler per event is supported (the last registration wins).
-
-        connection.on_with_result("GetMessage", lambda args: "Hello!")
-
-        Args:
-            event (string): Event name
-            callback (Callable): callback function that accepts the arguments list
-                and returns a result value
-        """
-        self.logger.debug(
-            "Result handler registered for {0}".format(event))
-        self.result_handlers[event] = callback
-
     def unsubscribe(self, event, callback_function: Callable) -> None:
         """Removes a callback from the specified event
         Args:
@@ -330,7 +309,7 @@ class BaseHubConnection(object):
                         message.invocation_id,
                         on_invocation))
 
-            self.transport.send(message)
+            self._send(message)
             result.message = message
 
         if type(arguments) is Subject:
@@ -342,57 +321,72 @@ class BaseHubConnection(object):
 
         return result
 
-    def __on_invocation_message(self, message: InvocationMessage) -> None:  # 1
+    def _send(self, message) -> None:
+        with self._send_lock:
+            self.transport.send(message)
+
+    def _invoke_handler(self, handler: Callable, arguments):
+        return handler(arguments)
+
+    def _send_completion(
+            self,
+            invocation_id: str,
+            result=None,
+            error=None) -> None:
+        self._send(
+            CompletionMessage(
+                invocation_id,
+                result,
+                error,
+                headers={}))
+
+    def _handle_invocation_message(
+            self, message: InvocationMessage) -> None:  # 1
         message: InvocationMessage
+        fired_handlers = list(self.handlers.get(message.target, []))
 
         # Server-to-client invocation expecting a result (client results, .NET 7+)
         if message.invocation_id is not None:
-            result_handler = self.result_handlers.get(message.target, None)
-            if result_handler is not None:
-                try:
-                    result = result_handler(message.arguments)
-                    completion = CompletionMessage(
-                        message.invocation_id,
-                        result,
-                        None,
-                        headers={})
-                except Exception as e:
-                    self.logger.exception(
-                        "Result handler for '{0}' raised an exception"
-                        .format(message.target))
-                    completion = CompletionMessage(
-                        message.invocation_id,
-                        None,
-                        str(e),
-                        headers={})
-                self.transport.send(completion)
-                return
-
-            # No result handler registered – fire regular handlers and send
-            # a null completion so the server is not left waiting indefinitely.
-            fired_handlers = self.handlers.get(message.target, [])
             if len(fired_handlers) == 0:
                 self.logger.warning(
                     f"Server requested a result for '{message.target}' "
-                    f"but no result handler is registered")
-            for handler in fired_handlers:
-                handler(message.arguments)
-            self.transport.send(
-                CompletionMessage(
-                    message.invocation_id,
-                    None,
-                    None,
-                    headers={}))
-            return
+                    f"but no handler is registered")
+                self._send_completion(message.invocation_id)
+                return
 
-        fired_handlers = self.handlers.get(message.target, [])
+            for handler in fired_handlers:
+                try:
+                    result = self._invoke_handler(
+                        handler,
+                        message.arguments)
+                    if result is not None:
+                        self._send_completion(
+                            message.invocation_id,
+                            result=result)
+                        return
+                except Exception as e:
+                    self.logger.exception(
+                        "Handler for '{0}' raised an exception"
+                        .format(message.target))
+                    self._send_completion(
+                        message.invocation_id,
+                        error=str(e))
+                    return
+
+            # A None return value means "no result"; still complete the
+            # invocation so the server is not left waiting indefinitely.
+            self._send_completion(message.invocation_id)
+            return
 
         if len(fired_handlers) == 0:
             self.logger.info(
                 f"Event '{message.target}' hasn't fired any handler")
 
         for handler in fired_handlers:
-            handler(message.arguments)
+            self._invoke_handler(handler, message.arguments)
+
+    def __on_invocation_message(self, message: InvocationMessage) -> None:
+        self._handle_invocation_message(message)
 
     def __on_stream_item_message(
             self, message: StreamItemMessage) -> None:  # 2
@@ -511,7 +505,7 @@ class BaseHubConnection(object):
         invocation_id = str(uuid.uuid4())
         stream_obj = StreamHandler(event, invocation_id)
         self.stream_handlers[invocation_id].append(stream_obj)
-        self.transport.send(
+        self._send(
             StreamInvocationMessage(
                 invocation_id,
                 event,

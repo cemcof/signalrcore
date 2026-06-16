@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import time
 from .aio_base_hub_connection import TransportState
 from ...hub.auth_hub_connection import AuthHubConnection
@@ -9,6 +10,7 @@ from ...messages.completion_message import CompletionMessage
 class AIOAuthHubConnection(AuthHubConnection):
     def __init__(self, **kwargs):
         super(AIOAuthHubConnection, self).__init__(**kwargs)
+        self._loop = None
 
     async def wait_until_state(
             self,
@@ -30,6 +32,7 @@ class AIOAuthHubConnection(AuthHubConnection):
             bool: True if connection stars successfully, False
             if connection cant start or is already connected
         """
+        self._loop = asyncio.get_event_loop()
         t1 = asyncio.to_thread(super().start)
         t2 = self.wait_until_state(TransportState.connected)
 
@@ -114,10 +117,25 @@ class AIOAuthHubConnection(AuthHubConnection):
             event: str,
             callback_function: Callable[[List[Any]], Awaitable[None]])\
             -> None:
-        """Register a callback on the specified event
+        """Register a callback on the specified event.
+
+        If the server expects a client result, the first non-None return value
+        is sent back. Async callbacks are supported.
+
         Args:
             event (string):  Event name
             callback_function (Function): callback function,
                 arguments will be bound
         """
+        if inspect.iscoroutinefunction(callback_function):
+            def sync_wrapper(arguments):
+                loop = self._loop
+                if loop is None or not loop.is_running():
+                    return asyncio.run(callback_function(arguments))
+                future = asyncio.run_coroutine_threadsafe(
+                    callback_function(arguments), loop)
+                return future.result()
+
+            return super().on(event, sync_wrapper)
+
         return super().on(event, callback_function)

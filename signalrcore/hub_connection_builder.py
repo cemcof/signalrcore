@@ -1,6 +1,10 @@
 import ssl
 from .hub.base_hub_connection import BaseHubConnection
 from .hub.auth_hub_connection import AuthHubConnection
+from .hub.executor_hub_connection import (
+    AuthExecutorHubConnection,
+    ExecutorHubConnection
+)
 from .transport.reconnection import \
     IntervalReconnectionHandler, RawReconnectionHandler, ReconnectionType
 from .helpers import Helpers
@@ -39,6 +43,7 @@ class HubConnectionBuilder(object):
         self.skip_negotiation = False  # By default do not skip negotiation
         self.proxies = dict()
         self.logger = Helpers.get_logger()
+        self.executor = None
 
     def with_url(
             self,
@@ -221,6 +226,36 @@ class HubConnectionBuilder(object):
         Returns:
             [BaseHubConnection]: [connection SignalR object]
         """
+        if self.executor is not None:
+            return AuthExecutorHubConnection(
+                    executor=self.executor,
+                    headers=self.headers,
+                    auth_function=self.auth_function,
+                    url=self.hub_url,
+                    protocol=self.protocol,
+                    preferred_protocol=self.preferred_protocol,
+                    keep_alive_interval=self.keep_alive_interval,
+                    reconnection_handler=self.reconnection_handler,
+                    ssl_context=self.ssl_context,
+                    proxies=self.proxies,
+                    skip_negotiation=self.skip_negotiation,
+                    enable_trace=self.enable_trace,
+                    preferred_transport=self.preferred_transport)\
+                if self.has_auth_configured else\
+                ExecutorHubConnection(
+                    executor=self.executor,
+                    url=self.hub_url,
+                    protocol=self.protocol,
+                    preferred_protocol=self.preferred_protocol,
+                    keep_alive_interval=self.keep_alive_interval,
+                    reconnection_handler=self.reconnection_handler,
+                    headers=self.headers,
+                    ssl_context=self.ssl_context,
+                    proxies=self.proxies,
+                    skip_negotiation=self.skip_negotiation,
+                    enable_trace=self.enable_trace,
+                    preferred_transport=self.preferred_transport)
+
         return AuthHubConnection(
                 headers=self.headers,
                 auth_function=self.auth_function,
@@ -247,6 +282,17 @@ class HubConnectionBuilder(object):
                 skip_negotiation=self.skip_negotiation,
                 enable_trace=self.enable_trace,
                 preferred_transport=self.preferred_transport)
+
+    def with_executor(self, executor):
+        """Runs inbound hub callbacks on the given executor.
+
+        The executor must expose submit(callable, *args, **kwargs) and return a
+        Future-compatible object with add_done_callback.
+        """
+        if executor is None or not callable(getattr(executor, "submit", None)):
+            raise TypeError("executor must expose a callable submit method")
+        self.executor = executor
+        return self
 
     def with_automatic_reconnect(self, data: dict):
         """Configures automatic reconnection

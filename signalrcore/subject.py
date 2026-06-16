@@ -47,10 +47,12 @@ class Subject(object):
         self.check()
         assert self.lock.acquire(timeout=self._timeout), \
             "Next raised exception"
-        self.connection.transport.send(StreamItemMessage(
-                self.invocation_id,
-                item))
-        self.lock.release()
+        try:
+            self.connection._send(StreamItemMessage(
+                    self.invocation_id,
+                    item))
+        finally:
+            self.lock.release()
 
     def start(self):
         """Starts streaming
@@ -58,12 +60,14 @@ class Subject(object):
         self.check()
         assert self.lock.acquire(timeout=self._timeout), \
             "Start raised exception"
-        self.connection.transport.send(
+        try:
+            self.connection._send(
                 InvocationClientStreamMessage(
                     [self.invocation_id],
                     self.target,
                     self.start_arguments))
-        self.lock.release()
+        finally:
+            self.lock.release()
 
     def complete(self):
         """Finish streaming
@@ -71,6 +75,8 @@ class Subject(object):
         self.check()
         assert self.lock.acquire(timeout=self._timeout), \
             "Complete raised exception"
-        self.connection.transport.send(CompletionClientStreamMessage(
-                self.invocation_id))
-        self.lock.release()
+        try:
+            self.connection._send(CompletionClientStreamMessage(
+                    self.invocation_id))
+        finally:
+            self.lock.release()

@@ -117,46 +117,25 @@ class AIOBaseHubConnection(BaseHubConnection):
             event: str,
             callback_function: Callable[[List[Any]], None])\
             -> None:
-        """Register a callback on the specified event
+        """Register a callback on the specified event.
+
+        If the server expects a client result, the first non-None return value
+        is sent back. Async callbacks are supported.
+
         Args:
             event (string):  Event name
             callback_function (Function): callback function,
                 arguments will be bound
         """
-        return super().on(event, callback_function)
-
-    def on_with_result(self, event: str, callback: Callable) -> None:
-        """Register a callback for server-to-client invocations that expect
-        a result back (client results, introduced in SignalR .NET 7).
-
-        The callback may be either a regular function or an async coroutine.
-        It receives the arguments list and must return (or resolve with) the
-        result value.  Exceptions are forwarded to the server as error strings.
-
-        connection.on_with_result("GetMessage", lambda args: "Hello!")
-
-        async def get_message(args):
-            await asyncio.sleep(0)
-            return "Hello async!"
-        connection.on_with_result("GetMessage", get_message)
-
-        Args:
-            event (string): Event name
-            callback (Callable): sync or async callback that accepts the
-                arguments list and returns a result value
-        """
-        if inspect.iscoroutinefunction(callback):
-            loop = self._loop
-
+        if inspect.iscoroutinefunction(callback_function):
             def sync_wrapper(arguments):
+                loop = self._loop
                 if loop is None or not loop.is_running():
-                    # Fallback: run a new event loop (e.g. before start())
-                    return asyncio.run(callback(arguments))
+                    return asyncio.run(callback_function(arguments))
                 future = asyncio.run_coroutine_threadsafe(
-                    callback(arguments), loop)
+                    callback_function(arguments), loop)
                 return future.result()
 
-            super().on_with_result(event, sync_wrapper)
-        else:
-            super().on_with_result(event, callback)
+            return super().on(event, sync_wrapper)
 
+        return super().on(event, callback_function)
