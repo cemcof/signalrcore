@@ -12,6 +12,7 @@ from signalrcore.subject import Subject
 class DummyTransport(object):
     def __init__(self):
         self.sent = []
+        self.stopped = False
 
     def send(self, message):
         self.sent.append(message)
@@ -19,10 +20,14 @@ class DummyTransport(object):
     def is_running(self):
         return True
 
+    def stop(self):
+        self.stopped = True
+
 
 class ManualExecutor(object):
     def __init__(self):
         self.calls = []
+        self.shutdown_calls = []
 
     def submit(self, fn, *args, **kwargs):
         future = Future()
@@ -37,8 +42,24 @@ class ManualExecutor(object):
             future.set_exception(ex)
         return future
 
+    def shutdown(self, wait=True, cancel_futures=False):
+        self.shutdown_calls.append((wait, cancel_futures))
+
 
 class HubConnectionCallbacksTest(unittest.TestCase):
+    def test_executor_connection_stop_shuts_down_transport_and_executor(self):
+        executor = ManualExecutor()
+        connection = ExecutorHubConnection(
+            executor=executor,
+            url="http://example.test")
+        connection.transport = DummyTransport()
+
+        connection.stop()
+        connection.stop()
+
+        self.assertTrue(connection.transport.stopped)
+        self.assertEqual([(True, True)], executor.shutdown_calls)
+
     def test_on_return_value_is_used_as_client_result(self):
         connection = BaseHubConnection(url="http://example.test")
         connection.transport = DummyTransport()

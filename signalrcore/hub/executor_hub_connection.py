@@ -1,3 +1,4 @@
+import threading
 from typing import Callable
 
 from .base_hub_connection import BaseHubConnection
@@ -9,8 +10,22 @@ class ExecutorHubConnection(BaseHubConnection):
     def __init__(self, executor, **kwargs):
         if executor is None or not callable(getattr(executor, "submit", None)):
             raise TypeError("executor must expose a callable submit method")
+        if not callable(getattr(executor, "shutdown", None)):
+            raise TypeError("executor must expose a callable shutdown method")
         super(ExecutorHubConnection, self).__init__(**kwargs)
         self.executor = executor
+        self._executor_shutdown = False
+        self._executor_shutdown_lock = threading.Lock()
+
+    def stop(self) -> None:
+        with self._executor_shutdown_lock:
+            shutdown_executor = not self._executor_shutdown
+            self._executor_shutdown = True
+        try:
+            super(ExecutorHubConnection, self).stop()
+        finally:
+            if shutdown_executor:
+                self.executor.shutdown(wait=True, cancel_futures=True)
 
     def _run_handler(self, handler: Callable, arguments):
         return self._invoke_handler(handler, arguments)
