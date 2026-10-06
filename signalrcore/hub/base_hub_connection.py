@@ -2,7 +2,7 @@ import uuid
 import copy
 import ssl
 import threading
-from typing import Callable, List, Union, Optional
+from typing import Any, Callable, List, Union, Optional
 from signalrcore.messages.message_type import MessageType
 from signalrcore.messages.stream_invocation_message\
     import StreamInvocationMessage
@@ -101,6 +101,7 @@ class BaseHubConnection(object):
         self.handlers = defaultdict(list)
         self.stream_handlers = defaultdict(list)
         self.skip_negotiation = skip_negotiation
+        self._error_message_predicates: List[Callable[[Any], bool]] = []
         self._callbacks = HubCallbacks()
         self._send_lock = threading.RLock()
 
@@ -228,6 +229,22 @@ class BaseHubConnection(object):
         self.logger.debug("Handler registered started {0}".format(event))
         self.handlers[event].append(callback_function)
 
+    def to_error_message_if(self, predicate: Callable[[Any], bool]) -> None:
+        """Send handler outcomes matching the predicate as invocation errors
+        Applies to both results returned and exceptions raised by handlers
+        that answer server invocations. A matching value is sent as the
+        completion error ``str(value)``; a matching exception is not logged.
+        Args:
+            predicate (Function): called with the returned result
+                or the raised exception
+        """
+        self._error_message_predicates.append(predicate)
+
+    def _is_error_message(self, value) -> bool:
+        return any(
+            predicate(value)
+            for predicate in self._error_message_predicates)
+
     def unsubscribe(self, event, callback_function: Callable) -> None:
         """Removes a callback from the specified event
         Args:
@@ -333,6 +350,8 @@ class BaseHubConnection(object):
             invocation_id: str,
             result=None,
             error=None) -> None:
+        if result is not None and self._is_error_message(result):
+            result, error = None, str(result)
         self._send(
             CompletionMessage(
                 invocation_id,
@@ -365,9 +384,10 @@ class BaseHubConnection(object):
                             result=result)
                         return
                 except Exception as e:
-                    self.logger.exception(
-                        "Handler for '{0}' raised an exception"
-                        .format(message.target))
+                    if not self._is_error_message(e):
+                        self.logger.exception(
+                            "Handler for '{0}' raised an exception"
+                            .format(message.target))
                     self._send_completion(
                         message.invocation_id,
                         error=str(e))

@@ -47,8 +47,9 @@ class ExecutorHubConnection(BaseHubConnection):
         try:
             self._send_completion(invocation_id, result=future.result())
         except Exception as ex:
-            self.logger.exception(
-                "Executor result handler raised an exception")
+            if not self._is_error_message(ex):
+                self.logger.exception(
+                    "Executor result handler raised an exception")
             self._send_completion(invocation_id, error=str(ex))
 
     def _handle_invocation_message(

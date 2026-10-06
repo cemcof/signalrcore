@@ -24,6 +24,10 @@ class DummyTransport(object):
         self.stopped = True
 
 
+class DomainError(Exception):
+    pass
+
+
 class ManualExecutor(object):
     def __init__(self):
         self.calls = []
@@ -116,6 +120,36 @@ class HubConnectionCallbacksTest(unittest.TestCase):
         self.assertEqual([["arg"]], called)
         completion = connection.transport.sent[0]
         self.assertEqual("Hello", completion.result)
+
+    def test_matching_result_and_exception_are_sent_as_error(self):
+        executor = ManualExecutor()
+        for connection in (
+                BaseHubConnection(url="http://example.test"),
+                ExecutorHubConnection(
+                    executor=executor,
+                    url="http://example.test")):
+            connection.transport = DummyTransport()
+            connection.to_error_message_if(
+                lambda x: isinstance(x, DomainError))
+
+            def raise_domain_error(args):
+                raise DomainError("MAX_SIZE_EXCEEDED")
+
+            connection.on("Returned", lambda args: DomainError("NOT_FOUND"))
+            connection.on("Raised", raise_domain_error)
+
+            with self.assertNoLogs(connection.logger):
+                connection.on_message([
+                    InvocationMessage("1", "Returned", []),
+                    InvocationMessage("2", "Raised", []),
+                ])
+                while executor.calls:
+                    executor.run_next()
+
+            sent = connection.transport.sent
+            self.assertEqual(
+                [(None, "NOT_FOUND"), (None, "MAX_SIZE_EXCEEDED")],
+                [(c.result, c.error) for c in sent])
 
     def test_subject_uses_connection_send_helper(self):
         connection = BaseHubConnection(url="http://example.test")
